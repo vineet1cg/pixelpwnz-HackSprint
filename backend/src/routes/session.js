@@ -8,7 +8,7 @@ router.delete('/:sessionId', async (req, res, next) => {
   try {
     const { sessionId } = req.params;
 
-    deleteSession(sessionId);
+    await deleteSession(sessionId);
 
     try {
       await deleteCollection(sessionId);

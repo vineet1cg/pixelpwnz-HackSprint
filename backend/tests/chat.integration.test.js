@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import request from 'supertest';
 
 // Mock the brain module so we don't need ChromaDB/LLM for pipeline tests
@@ -21,14 +21,22 @@ vi.mock('../src/llm/provider.js', () => ({
 }));
 
 import app from '../src/index.js';
-import { createSession, getSession, clearAll, stopCleanup } from '../src/store/sessionStore.js';
+import { connectDB, disconnectDB } from '../src/db.js';
+import {
+  createSession, getSession, clearAll, stopCleanup,
+} from '../src/store/sessionStore.js';
 import { buildRAGPrompt } from '../src/brain/index.js';
 import { generateReply } from '../src/llm/provider.js';
+
 describe('POST /api/chat', () => {
-  beforeEach(() => {
+  beforeAll(async () => {
+    await connectDB();
+  });
+
+  beforeEach(async () => {
     clearAll();
     vi.clearAllMocks();
-    createSession('test-session-1', {
+    await createSession('test-session-1', {
       contact_name: 'Rishab',
       userName: 'Vineet',
       toneProfile: { avgReplyLength: 5, emojiFrequency: 0.1, formalityLevel: 'Medium' },
@@ -36,8 +44,9 @@ describe('POST /api/chat', () => {
     });
   });
 
-  afterAll(() => {
+  afterAll(async () => {
     stopCleanup();
+    await disconnectDB();
   });
 
   it('returns 400 when session_id is missing', async () => {
@@ -72,7 +81,6 @@ describe('POST /api/chat', () => {
       .post('/api/chat')
       .send({ session_id: 'test-session-1', message: 'Hello via alias' });
 
-    // Should not be 400 — means it accepted the 'message' field
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.reply).toBe('Mocked clone reply');
@@ -98,7 +106,6 @@ describe('POST /api/chat', () => {
 
     expect(res.status).toBe(200);
 
-    // buildRAGPrompt should be called with 'Primary message' (not 'Alias message')
     const mockBuildRAGPrompt = vi.mocked(buildRAGPrompt);
     expect(mockBuildRAGPrompt).toHaveBeenCalledWith(
       'test-session-1',
@@ -120,7 +127,6 @@ describe('POST /api/chat', () => {
     expect(res.body.latency_ms).toBeGreaterThanOrEqual(0);
     expect(res.body.token_usage).toBeDefined();
 
-    // Verify buildRAGPrompt was called correctly
     const mockBuildRAGPrompt = vi.mocked(buildRAGPrompt);
     expect(mockBuildRAGPrompt).toHaveBeenCalledWith(
       'test-session-1',
@@ -129,7 +135,6 @@ describe('POST /api/chat', () => {
       expect.any(Object),
     );
 
-    // Verify generateReply was called with the mocked prompt outputs
     const mockGenerateReply = vi.mocked(generateReply);
     expect(mockGenerateReply).toHaveBeenCalledWith(
       'system prompt',
@@ -139,7 +144,6 @@ describe('POST /api/chat', () => {
   });
 
   it('includes fallback flag when generateReply uses fallback', async () => {
-    // Override the mock for this test
     vi.mocked(generateReply).mockResolvedValueOnce({
       reply: 'Fallback reply',
       usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
@@ -157,9 +161,13 @@ describe('POST /api/chat', () => {
 });
 
 describe('DELETE /api/session/:sessionId', () => {
-  beforeEach(() => {
+  beforeAll(async () => {
+    await connectDB();
+  });
+
+  beforeEach(async () => {
     clearAll();
-    createSession('del-test', {
+    await createSession('del-test', {
       contact_name: 'Test',
       userName: 'User',
       toneProfile: { avgReplyLength: 3, emojiFrequency: 0, formalityLevel: 'Medium' },
@@ -167,14 +175,16 @@ describe('DELETE /api/session/:sessionId', () => {
     });
   });
 
-  afterAll(() => {
+  afterAll(async () => {
     stopCleanup();
+    await disconnectDB();
   });
 
   it('returns 204 on successful deletion', async () => {
     const res = await request(app).delete('/api/session/del-test');
     expect(res.status).toBe(204);
-    expect(getSession('del-test')).toBeNull();
+    const session = await getSession('del-test');
+    expect(session).toBeNull();
   });
 
   it('returns 204 even for non-existent sessions', async () => {
@@ -184,12 +194,17 @@ describe('DELETE /api/session/:sessionId', () => {
 });
 
 describe('GET /api/stats/:sessionId', () => {
+  beforeAll(async () => {
+    await connectDB();
+  });
+
   beforeEach(() => {
     clearAll();
   });
 
-  afterAll(() => {
+  afterAll(async () => {
     stopCleanup();
+    await disconnectDB();
   });
 
   it('returns session_exists: false for invalid session', async () => {
@@ -199,7 +214,7 @@ describe('GET /api/stats/:sessionId', () => {
   });
 
   it('returns stats for valid session', async () => {
-    createSession('stats-test', {
+    await createSession('stats-test', {
       contact_name: 'Rishab',
       userName: 'Vineet',
       toneProfile: { avgReplyLength: 4, emojiFrequency: 0.2, formalityLevel: 'Medium' },

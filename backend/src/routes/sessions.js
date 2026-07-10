@@ -1,22 +1,23 @@
 import { Router } from 'express';
 import { listSessions, getSession, updateSession } from '../store/sessionStore.js';
 import { countVectors } from '../brain/chromaClient.js';
+import { requireAuth, optionalAuth } from '../middleware/auth.js';
+import ChatMessage from '../models/ChatMessage.js';
 
 const router = Router();
 
 /**
  * GET /api/sessions
- * List all active sessions with summary info.
- * Supports optional search query param for filtering by contact_name.
- *
- * Query params:
- *   - search: string (optional) — filter sessions by contact_name (case-insensitive)
+ * List all active sessions. If authenticated, returns user's sessions.
+ * If unauthenticated, returns all active sessions (from cache).
  */
-router.get('/', (req, res, next) => {
+router.get('/', optionalAuth, async (req, res, next) => {
   try {
     const { search } = req.query;
 
-    let sessions = listSessions();
+    // If user is authenticated, scope to their sessions
+    const userId = req.user?.id || null;
+    let sessions = await listSessions(userId);
 
     if (search && typeof search === 'string' && search.trim()) {
       const q = search.trim().toLowerCase();
@@ -39,12 +40,12 @@ router.get('/', (req, res, next) => {
 
 /**
  * GET /api/sessions/:sessionId
- * Get detailed session info including tone profile, creation time, and vector count.
+ * Get detailed session info including tone profile, vector count, message count.
  */
-router.get('/:sessionId', async (req, res, next) => {
+router.get('/:sessionId', optionalAuth, async (req, res, next) => {
   try {
     const { sessionId } = req.params;
-    const session = getSession(sessionId);
+    const session = await getSession(sessionId);
 
     if (!session) {
       return res.status(404).json({
@@ -58,7 +59,15 @@ router.get('/:sessionId', async (req, res, next) => {
     try {
       vectorCount = await countVectors(sessionId);
     } catch {
-      // ChromaDB may not be available — fall back to pairs length
+      // ChromaDB may not be available
+    }
+
+    // Get message count from chat history
+    let messageCount = 0;
+    try {
+      messageCount = await ChatMessage.countDocuments({ session_id: sessionId });
+    } catch {
+      // Chat history may not be available
     }
 
     res.status(200).json({
@@ -72,6 +81,7 @@ router.get('/:sessionId', async (req, res, next) => {
         created_at: session.created_at,
         pair_count: session.pairs ? session.pairs.length : 0,
         vector_count: vectorCount,
+        message_count: messageCount,
         toneProfile: session.toneProfile || null,
         contact_pairs_preview: session.pairs
           ? session.pairs.slice(0, 3).map((p) => ({
@@ -89,12 +99,8 @@ router.get('/:sessionId', async (req, res, next) => {
 /**
  * PATCH /api/sessions/:sessionId
  * Update session metadata.
- *
- * Body (JSON):
- *   - label: string (optional) — a user-defined label for the session
- *   - temperature: number (optional) — LLM temperature override (0.0 - 2.0)
  */
-router.patch('/:sessionId', (req, res, next) => {
+router.patch('/:sessionId', optionalAuth, async (req, res, next) => {
   try {
     const { sessionId } = req.params;
     const { label, temperature } = req.body;
@@ -127,7 +133,7 @@ router.patch('/:sessionId', (req, res, next) => {
       }
     }
 
-    const updated = updateSession(sessionId, { label, temperature });
+    const updated = await updateSession(sessionId, { label, temperature });
 
     if (!updated) {
       return res.status(404).json({
@@ -156,16 +162,11 @@ router.patch('/:sessionId', (req, res, next) => {
 /**
  * GET /api/sessions/:sessionId/pairs
  * Get paginated conversation pairs for a session.
- *
- * Query params:
- *   - page: integer (default: 1)
- *   - limit: integer (default: 20, max: 100)
- *   - sort: 'asc' | 'desc' (default: 'desc' — newest first)
  */
-router.get('/:sessionId/pairs', (req, res, next) => {
+router.get('/:sessionId/pairs', optionalAuth, async (req, res, next) => {
   try {
     const { sessionId } = req.params;
-    const session = getSession(sessionId);
+    const session = await getSession(sessionId);
 
     if (!session) {
       return res.status(404).json({
@@ -199,6 +200,61 @@ router.get('/:sessionId/pairs', (req, res, next) => {
     res.status(200).json({
       success: true,
       pairs: paged,
+      pagination: {
+        page,
+        limit,
+        total,
+        total_pages: totalPages,
+        has_next: page < totalPages,
+        has_prev: page > 1,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/sessions/:sessionId/messages
+ * Get paginated chat message history for a session.
+ */
+router.get('/:sessionId/messages', optionalAuth, async (req, res, next) => {
+  try {
+    const { sessionId } = req.params;
+
+    // Verify session exists
+    const session = await getSession(sessionId);
+    if (!session) {
+      return res.status(404).json({
+        success: false,
+        error: 'Session not found or expired',
+      });
+    }
+
+    // Parse pagination params
+    let page = parseInt(req.query.page, 10);
+    let limit = parseInt(req.query.limit, 10);
+
+    if (Number.isNaN(page) || page < 1) page = 1;
+    if (Number.isNaN(limit) || limit < 1) limit = 50;
+    if (limit > 200) limit = 200;
+
+    const skip = (page - 1) * limit;
+
+    const [messages, total] = await Promise.all([
+      ChatMessage.find({ session_id: sessionId })
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      ChatMessage.countDocuments({ session_id: sessionId }),
+    ]);
+
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+
+    res.status(200).json({
+      success: true,
+      messages: messages.reverse(), // Reverse so oldest first in the response
       pagination: {
         page,
         limit,

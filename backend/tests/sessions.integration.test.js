@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import request from 'supertest';
 import app from '../src/index.js';
+import { connectDB, disconnectDB } from '../src/db.js';
 import {
   createSession,
   getSession,
@@ -35,12 +36,17 @@ const makeTestSession = (overrides = {}) => ({
 });
 
 describe('GET /api/sessions', () => {
-  beforeEach(() => {
+  beforeAll(async () => {
+    await connectDB();
+  });
+
+  beforeEach(async () => {
     clearAll();
   });
 
-  afterAll(() => {
+  afterAll(async () => {
     stopCleanup();
+    await disconnectDB();
   });
 
   it('returns empty list when no sessions exist', async () => {
@@ -52,8 +58,8 @@ describe('GET /api/sessions', () => {
   });
 
   it('returns all active sessions with summary info', async () => {
-    createSession('session-a', makeTestSession({ contact_name: 'Alice' }));
-    createSession('session-b', makeTestSession({ contact_name: 'Bob' }));
+    await createSession('session-a', makeTestSession({ contact_name: 'Alice' }));
+    await createSession('session-b', makeTestSession({ contact_name: 'Bob' }));
 
     const res = await request(app).get('/api/sessions');
     expect(res.status).toBe(200);
@@ -61,12 +67,10 @@ describe('GET /api/sessions', () => {
     expect(res.body.count).toBe(2);
     expect(res.body.sessions).toHaveLength(2);
 
-    // Sessions sorted newest first (both created within same tick, so order may vary)
     const contacts = res.body.sessions.map((s) => s.contact_name);
     expect(contacts).toContain('Alice');
     expect(contacts).toContain('Bob');
 
-    // Summary fields — no full pairs array
     const session = res.body.sessions[0];
     expect(session.session_id).toBeDefined();
     expect(session.contact_name).toBeDefined();
@@ -75,14 +79,13 @@ describe('GET /api/sessions', () => {
     expect(session.pair_count).toBe(5);
     expect(session.toneProfile).toBeDefined();
     expect(session.label).toBeNull();
-    // Pairs array should NOT be included
     expect(session.pairs).toBeUndefined();
   });
 
   it('filters sessions by search query on contact_name', async () => {
-    createSession('session-a', makeTestSession({ contact_name: 'Alice' }));
-    createSession('session-b', makeTestSession({ contact_name: 'Bob' }));
-    createSession('session-c', makeTestSession({ contact_name: 'Alex' }));
+    await createSession('session-a', makeTestSession({ contact_name: 'Alice' }));
+    await createSession('session-b', makeTestSession({ contact_name: 'Bob' }));
+    await createSession('session-c', makeTestSession({ contact_name: 'Alex' }));
 
     const res = await request(app).get('/api/sessions?search=ali');
     expect(res.status).toBe(200);
@@ -91,8 +94,8 @@ describe('GET /api/sessions', () => {
   });
 
   it('filters sessions by search query on userName', async () => {
-    createSession('session-a', makeTestSession({ userName: 'Vineet' }));
-    createSession('session-b', makeTestSession({ userName: 'Priya' }));
+    await createSession('session-a', makeTestSession({ userName: 'Vineet' }));
+    await createSession('session-b', makeTestSession({ userName: 'Priya' }));
 
     const res = await request(app).get('/api/sessions?search=pri');
     expect(res.status).toBe(200);
@@ -101,7 +104,7 @@ describe('GET /api/sessions', () => {
   });
 
   it('returns empty results for non-matching search', async () => {
-    createSession('session-a', makeTestSession({ contact_name: 'Alice' }));
+    await createSession('session-a', makeTestSession({ contact_name: 'Alice' }));
 
     const res = await request(app).get('/api/sessions?search=zxy');
     expect(res.status).toBe(200);
@@ -111,12 +114,17 @@ describe('GET /api/sessions', () => {
 });
 
 describe('GET /api/sessions/:sessionId', () => {
-  beforeEach(() => {
+  beforeAll(async () => {
+    await connectDB();
+  });
+
+  beforeEach(async () => {
     clearAll();
   });
 
-  afterAll(() => {
+  afterAll(async () => {
     stopCleanup();
+    await disconnectDB();
   });
 
   it('returns 404 for non-existent session', async () => {
@@ -128,7 +136,7 @@ describe('GET /api/sessions/:sessionId', () => {
 
   it('returns session details for valid session', async () => {
     const pairs = makeTestSession().pairs;
-    createSession('detail-test', {
+    await createSession('detail-test', {
       contact_name: 'Rishab',
       userName: 'Vineet',
       toneProfile: makeTestSession().toneProfile,
@@ -149,14 +157,13 @@ describe('GET /api/sessions/:sessionId', () => {
     expect(session.created_at).toBeGreaterThan(0);
     expect(session.label).toBeNull();
     expect(session.temperature).toBe(0.7);
-
-    // Should include preview pairs (first 3)
+    expect(session.message_count).toBe(0);
     expect(session.contact_pairs_preview).toHaveLength(3);
     expect(session.contact_pairs_preview[0].incoming_message).toBe('Hey');
   });
 
   it('handles session with zero pairs gracefully', async () => {
-    createSession('empty-test', {
+    await createSession('empty-test', {
       contact_name: 'Empty',
       userName: 'User',
       toneProfile: null,
@@ -171,12 +178,17 @@ describe('GET /api/sessions/:sessionId', () => {
 });
 
 describe('PATCH /api/sessions/:sessionId', () => {
-  beforeEach(() => {
+  beforeAll(async () => {
+    await connectDB();
+  });
+
+  beforeEach(async () => {
     clearAll();
   });
 
-  afterAll(() => {
+  afterAll(async () => {
     stopCleanup();
+    await disconnectDB();
   });
 
   it('returns 404 for non-existent session', async () => {
@@ -189,7 +201,7 @@ describe('PATCH /api/sessions/:sessionId', () => {
   });
 
   it('returns 400 when no updatable fields provided', async () => {
-    createSession('patch-test', makeTestSession());
+    await createSession('patch-test', makeTestSession());
 
     const res = await request(app)
       .patch('/api/sessions/patch-test')
@@ -200,7 +212,7 @@ describe('PATCH /api/sessions/:sessionId', () => {
   });
 
   it('returns 400 for invalid label type', async () => {
-    createSession('patch-test', makeTestSession());
+    await createSession('patch-test', makeTestSession());
 
     const res = await request(app)
       .patch('/api/sessions/patch-test')
@@ -211,7 +223,7 @@ describe('PATCH /api/sessions/:sessionId', () => {
   });
 
   it('returns 400 for empty label string', async () => {
-    createSession('patch-test', makeTestSession());
+    await createSession('patch-test', makeTestSession());
 
     const res = await request(app)
       .patch('/api/sessions/patch-test')
@@ -222,7 +234,7 @@ describe('PATCH /api/sessions/:sessionId', () => {
   });
 
   it('returns 400 for label exceeding max length', async () => {
-    createSession('patch-test', makeTestSession());
+    await createSession('patch-test', makeTestSession());
 
     const res = await request(app)
       .patch('/api/sessions/patch-test')
@@ -233,7 +245,7 @@ describe('PATCH /api/sessions/:sessionId', () => {
   });
 
   it('returns 400 for temperature out of range', async () => {
-    createSession('patch-test', makeTestSession());
+    await createSession('patch-test', makeTestSession());
 
     const res1 = await request(app)
       .patch('/api/sessions/patch-test')
@@ -249,7 +261,7 @@ describe('PATCH /api/sessions/:sessionId', () => {
   });
 
   it('returns 400 for non-numeric temperature', async () => {
-    createSession('patch-test', makeTestSession());
+    await createSession('patch-test', makeTestSession());
 
     const res = await request(app)
       .patch('/api/sessions/patch-test')
@@ -260,7 +272,7 @@ describe('PATCH /api/sessions/:sessionId', () => {
   });
 
   it('successfully updates session label', async () => {
-    createSession('patch-test', makeTestSession());
+    await createSession('patch-test', makeTestSession());
 
     const res = await request(app)
       .patch('/api/sessions/patch-test')
@@ -271,13 +283,12 @@ describe('PATCH /api/sessions/:sessionId', () => {
     expect(res.body.session.label).toBe('Work Chat');
     expect(res.body.session.contact_name).toBe('Rishab');
 
-    // Verify persistence in store
-    const session = getSession('patch-test');
+    const session = await getSession('patch-test');
     expect(session.label).toBe('Work Chat');
   });
 
   it('successfully updates session temperature', async () => {
-    createSession('patch-test', makeTestSession());
+    await createSession('patch-test', makeTestSession());
 
     const res = await request(app)
       .patch('/api/sessions/patch-test')
@@ -286,12 +297,12 @@ describe('PATCH /api/sessions/:sessionId', () => {
     expect(res.status).toBe(200);
     expect(res.body.session.temperature).toBe(1.5);
 
-    const session = getSession('patch-test');
+    const session = await getSession('patch-test');
     expect(session.temperature).toBe(1.5);
   });
 
   it('updates both label and temperature in one request', async () => {
-    createSession('patch-test', makeTestSession());
+    await createSession('patch-test', makeTestSession());
 
     const res = await request(app)
       .patch('/api/sessions/patch-test')
@@ -304,12 +315,17 @@ describe('PATCH /api/sessions/:sessionId', () => {
 });
 
 describe('GET /api/sessions/:sessionId/pairs', () => {
-  beforeEach(() => {
+  beforeAll(async () => {
+    await connectDB();
+  });
+
+  beforeEach(async () => {
     clearAll();
   });
 
-  afterAll(() => {
+  afterAll(async () => {
     stopCleanup();
+    await disconnectDB();
   });
 
   it('returns 404 for non-existent session', async () => {
@@ -318,12 +334,12 @@ describe('GET /api/sessions/:sessionId/pairs', () => {
   });
 
   it('returns paginated pairs with default params', async () => {
-    createSession('pairs-test', makeTestSession());
+    await createSession('pairs-test', makeTestSession());
 
     const res = await request(app).get('/api/sessions/pairs-test/pairs');
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
-    expect(res.body.pairs).toHaveLength(5); // All 5 fit in default limit of 20
+    expect(res.body.pairs).toHaveLength(5);
     expect(res.body.pagination.page).toBe(1);
     expect(res.body.pagination.limit).toBe(20);
     expect(res.body.pagination.total).toBe(5);
@@ -333,7 +349,7 @@ describe('GET /api/sessions/:sessionId/pairs', () => {
   });
 
   it('paginates correctly with small limit', async () => {
-    createSession('pairs-test', makeTestSession());
+    await createSession('pairs-test', makeTestSession());
 
     const res = await request(app).get('/api/sessions/pairs-test/pairs?page=1&limit=2');
     expect(res.status).toBe(200);
@@ -347,7 +363,7 @@ describe('GET /api/sessions/:sessionId/pairs', () => {
   });
 
   it('returns correct page 2 data', async () => {
-    createSession('pairs-test', makeTestSession());
+    await createSession('pairs-test', makeTestSession());
 
     const res = await request(app).get('/api/sessions/pairs-test/pairs?page=2&limit=2');
     expect(res.status).toBe(200);
@@ -358,7 +374,7 @@ describe('GET /api/sessions/:sessionId/pairs', () => {
   });
 
   it('returns remaining items on last page', async () => {
-    createSession('pairs-test', makeTestSession());
+    await createSession('pairs-test', makeTestSession());
 
     const res = await request(app).get('/api/sessions/pairs-test/pairs?page=3&limit=2');
     expect(res.status).toBe(200);
@@ -369,7 +385,7 @@ describe('GET /api/sessions/:sessionId/pairs', () => {
   });
 
   it('returns empty array for page beyond bounds', async () => {
-    createSession('pairs-test', makeTestSession());
+    await createSession('pairs-test', makeTestSession());
 
     const res = await request(app).get('/api/sessions/pairs-test/pairs?page=99&limit=10');
     expect(res.status).toBe(200);
@@ -379,7 +395,7 @@ describe('GET /api/sessions/:sessionId/pairs', () => {
   });
 
   it('enforces limit cap of 100', async () => {
-    createSession('pairs-test', makeTestSession());
+    await createSession('pairs-test', makeTestSession());
 
     const res = await request(app).get('/api/sessions/pairs-test/pairs?limit=999');
     expect(res.status).toBe(200);
@@ -387,27 +403,63 @@ describe('GET /api/sessions/:sessionId/pairs', () => {
   });
 
   it('sorts ascending when sort=asc', async () => {
-    createSession('pairs-test', makeTestSession());
+    await createSession('pairs-test', makeTestSession());
 
     const res = await request(app).get('/api/sessions/pairs-test/pairs?sort=asc');
     expect(res.status).toBe(200);
-    // Oldest first
     expect(res.body.pairs[0].incoming_message).toBe('Hey');
     expect(res.body.pairs[4].incoming_message).toBe('Running late');
   });
 
   it('sorts descending by default', async () => {
-    createSession('pairs-test', makeTestSession());
+    await createSession('pairs-test', makeTestSession());
 
     const res = await request(app).get('/api/sessions/pairs-test/pairs');
     expect(res.status).toBe(200);
-    // Newest first (default desc)
     expect(res.body.pairs[0].incoming_message).toBe('Running late');
     expect(res.body.pairs[4].incoming_message).toBe('Hey');
   });
 });
 
+describe('GET /api/sessions/:sessionId/messages', () => {
+  beforeAll(async () => {
+    await connectDB();
+  });
+
+  beforeEach(async () => {
+    clearAll();
+  });
+
+  afterAll(async () => {
+    stopCleanup();
+    await disconnectDB();
+  });
+
+  it('returns 404 for non-existent session', async () => {
+    const res = await request(app).get('/api/sessions/nonexistent/messages');
+    expect(res.status).toBe(404);
+  });
+
+  it('returns empty messages array for valid session with no chat history', async () => {
+    await createSession('msgs-test', makeTestSession());
+
+    const res = await request(app).get('/api/sessions/msgs-test/messages');
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.messages).toEqual([]);
+    expect(res.body.pagination.total).toBe(0);
+  });
+});
+
 describe('GET /api/config', () => {
+  beforeAll(async () => {
+    await connectDB();
+  });
+
+  afterAll(async () => {
+    await disconnectDB();
+  });
+
   it('returns public configuration', async () => {
     const res = await request(app).get('/api/config');
     expect(res.status).toBe(200);
